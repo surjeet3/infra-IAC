@@ -1,0 +1,89 @@
+name: Azure Infrastructure Deployment
+
+on:
+  push:
+    branches:
+      - dev
+      - prod
+  workflow_dispatch:
+
+env:
+  AZURE_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION }}
+  AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+  KEY_VAULT_NAME: ${{ secrets.KEY_VAULT_NAME }}
+  SECRET_1: ${{ secrets.db_password }}
+  SECRET_2: ${{ secrets.api_key }}
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.0
+
+    - name: Authenticate to Azure
+      uses: azure/login@v1
+      with:
+        creds: ${{ env.AZURE_CREDENTIALS }}
+
+    - name: Initialize Terraform
+      run: terraform init
+
+    - name: Terraform Plan
+      run: terraform plan -out=tfplan
+
+    - name: Insert Secrets into Key Vault
+      run: |
+        az keyvault secret set --vault-name ${{ env.KEY_VAULT_NAME }} --name "DbPassword" --value "${{ env.SECRET_1 }}"
+        az keyvault secret set --vault-name ${{ env.KEY_VAULT_NAME }} --name "ApiKey" --value "${{ env.SECRET_2 }}"
+
+    - name: Upload Plan for Approval
+      uses: actions/upload-artifact@v3
+      with:
+        name: tfplan
+        path: tfplan
+
+  manual-approval:
+    name: Manual Approval
+    needs: terraform-plan
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Wait for Approval
+      uses: hmarr/auto-approve-action@v2
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  terraform-apply:
+    name: Terraform Apply
+    needs: manual-approval
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.0
+
+    - name: Authenticate to Azure
+      uses: azure/login@v1
+      with:
+        creds: ${{ env.AZURE_CREDENTIALS }}
+
+    - name: Download Plan
+      uses: actions/download-artifact@v3
+      with:
+        name: tfplan
+
+    - name: Apply Terraform Plan
+      run: terraform apply tfplan
